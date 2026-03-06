@@ -105,6 +105,23 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 	}
 }
 
+func TestSyncOpenAIReasoningEffortWithModel(t *testing.T) {
+	reqBody := map[string]any{
+		"model":            "gpt-5.3-codex-xhigh",
+		"reasoning":        map[string]any{"effort": "low"},
+		"reasoning_effort": "medium",
+	}
+
+	modified := syncOpenAIReasoningEffortWithModel(reqBody, "gpt-5.3-codex-xhigh")
+	require.True(t, modified)
+
+	reasoning, ok := reqBody["reasoning"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "xhigh", reasoning["effort"])
+	_, hasFlat := reqBody["reasoning_effort"]
+	require.False(t, hasFlat)
+}
+
 func TestGetOpenAIRequestBodyMap_UsesContextCache(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

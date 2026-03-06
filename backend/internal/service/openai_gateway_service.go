@@ -1451,11 +1451,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
 
-	originalBody := body
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
 
-	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	isCodexCLI := isOfficialCodexClientRequest(c, s.cfg)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	clientTransport := GetOpenAIClientTransport(c)
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
@@ -1487,16 +1486,29 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
 	}
-	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
+	passthroughEnabled := false
 	if passthroughEnabled {
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
-		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+		return s.forwardOpenAIPassthrough(ctx, c, account, body, reqModel, reasoningEffort, reqStream, startTime)
 	}
 
 	reqBody, err := getOpenAIRequestBodyMap(c, body)
 	if err != nil {
 		return nil, err
+	}
+	prePassthroughModified := false
+	if applyInstructions(reqBody, isCodexCLI) {
+		prePassthroughModified = true
+	}
+	if syncOpenAIReasoningEffortWithModel(reqBody, reqModel) {
+		prePassthroughModified = true
+	}
+	if prePassthroughModified {
+		body, err = json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("serialize request body: %w", err)
+		}
 	}
 
 	if v, ok := reqBody["model"].(string); ok {
@@ -1510,6 +1522,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if v, ok := reqBody["prompt_cache_key"].(string); ok {
 			promptCacheKey = strings.TrimSpace(v)
 		}
+	}
+
+	passthroughEnabled = account.IsOpenAIPassthroughEnabled()
+	if passthroughEnabled {
+		reasoningEffort := extractOpenAIReasoningEffort(reqBody, reqModel)
+		return s.forwardOpenAIPassthrough(ctx, c, account, body, reqModel, reasoningEffort, reqStream, startTime)
 	}
 
 	// Track if body needs re-serialization
@@ -1564,7 +1582,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	// 非透传模式下，保持历史行为：非 Codex CLI 请求在 instructions 为空时注入默认指令。
-	if !isCodexCLI && isInstructionsEmpty(reqBody) {
+	if account == nil && !isCodexCLI && isInstructionsEmpty(reqBody) {
 		if instructions := strings.TrimSpace(GetOpenCodeInstructions()); instructions != "" {
 			reqBody["instructions"] = instructions
 			bodyModified = true
@@ -2270,13 +2288,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
+	if account.Type == AccountTypeOAuth && !isOfficialCodexClientRequest(c, s.cfg) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
-	if req.Header.Get("content-type") == "" {
-		req.Header.Set("content-type", "application/json")
-	}
+	req.Header.Set("content-type", "application/json")
 
 	return req, nil
 }
@@ -2645,9 +2661,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 
 	// Ensure required headers exist
-	if req.Header.Get("content-type") == "" {
-		req.Header.Set("content-type", "application/json")
-	}
+	req.Header.Set("content-type", "application/json")
 
 	return req, nil
 }
@@ -3806,6 +3820,39 @@ func extractOpenAIReasoningEffortFromBody(body []byte, requestedModel string) *s
 		return nil
 	}
 	return &value
+}
+
+func syncOpenAIReasoningEffortWithModel(reqBody map[string]any, requestedModel string) bool {
+	if len(reqBody) == 0 {
+		return false
+	}
+
+	effort := deriveOpenAIReasoningEffortFromModel(requestedModel)
+	if effort == "" {
+		return false
+	}
+
+	modified := false
+	reasoning, ok := reqBody["reasoning"].(map[string]any)
+	if !ok || reasoning == nil {
+		reasoning = map[string]any{}
+		reqBody["reasoning"] = reasoning
+		modified = true
+	}
+
+	if current, _ := reasoning["effort"].(string); normalizeOpenAIReasoningEffort(current) != effort {
+		reasoning["effort"] = effort
+		modified = true
+	}
+
+	if current, ok := reqBody["reasoning_effort"]; ok {
+		if raw, rawOK := current.(string); !rawOK || normalizeOpenAIReasoningEffort(raw) != effort {
+			delete(reqBody, "reasoning_effort")
+			modified = true
+		}
+	}
+
+	return modified
 }
 
 func getOpenAIRequestBodyMap(c *gin.Context, body []byte) (map[string]any, error) {

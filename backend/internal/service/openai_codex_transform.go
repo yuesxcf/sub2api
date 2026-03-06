@@ -193,14 +193,7 @@ func normalizeCodexModel(model string) string {
 	if strings.Contains(normalized, "gpt-5.1") || strings.Contains(normalized, "gpt 5.1") {
 		return "gpt-5.1"
 	}
-	if strings.Contains(normalized, "codex") {
-		return "gpt-5.1-codex"
-	}
-	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.1"
-	}
-
-	return "gpt-5.1"
+	return modelID
 }
 
 func getNormalizedCodexModel(modelID string) string {
@@ -243,9 +236,9 @@ func GetCodexCLIInstructions() string {
 // isCodexCLI=false: 优先使用内置 Codex CLI 指令覆盖
 func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
 	if isCodexCLI {
-		return applyCodexCLIInstructions(reqBody)
+		return rewritePromptFields(reqBody, true)
 	}
-	return applyOpenCodeInstructions(reqBody)
+	return rewritePromptFields(reqBody, false)
 }
 
 // applyCodexCLIInstructions 为 Codex CLI 请求补充缺失的 instructions
@@ -267,24 +260,7 @@ func applyCodexCLIInstructions(reqBody map[string]any) bool {
 // applyOpenCodeInstructions 为非 Codex CLI 请求应用内置 Codex CLI 指令（兼容历史函数名）
 // 优先使用内置 Codex CLI 指令覆盖
 func applyOpenCodeInstructions(reqBody map[string]any) bool {
-	instructions := strings.TrimSpace(getOpenCodeCodexHeader())
-	existingInstructions, _ := reqBody["instructions"].(string)
-	existingInstructions = strings.TrimSpace(existingInstructions)
-
-	if instructions != "" {
-		if existingInstructions != instructions {
-			reqBody["instructions"] = instructions
-			return true
-		}
-	} else if existingInstructions == "" {
-		codexInstructions := strings.TrimSpace(getCodexCLIInstructions())
-		if codexInstructions != "" {
-			reqBody["instructions"] = codexInstructions
-			return true
-		}
-	}
-
-	return false
+	return rewritePromptFields(reqBody, false)
 }
 
 // isInstructionsEmpty 检查 instructions 字段是否为空
@@ -302,6 +278,41 @@ func isInstructionsEmpty(reqBody map[string]any) bool {
 		return true
 	}
 	return strings.TrimSpace(str) == ""
+}
+
+func rewritePromptFields(reqBody map[string]any, allowInstructions bool) bool {
+	if len(reqBody) == 0 {
+		return false
+	}
+
+	modified := false
+	if !allowInstructions {
+		if _, ok := reqBody["instructions"]; ok {
+			delete(reqBody, "instructions")
+			modified = true
+		}
+		if _, ok := reqBody["system"]; ok {
+			delete(reqBody, "system")
+			modified = true
+		}
+		return modified
+	}
+
+	if rawSystem, ok := reqBody["system"]; ok {
+		if system, ok := rawSystem.(string); ok {
+			system = strings.TrimSpace(system)
+			if system != "" {
+				if current, _ := reqBody["instructions"].(string); current != system {
+					reqBody["instructions"] = system
+					modified = true
+				}
+			}
+		}
+		delete(reqBody, "system")
+		modified = true
+	}
+
+	return modified
 }
 
 // filterCodexInput 按需过滤 item_reference 与 id。
