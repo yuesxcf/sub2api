@@ -28,13 +28,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -45,14 +38,23 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image
+      - name: Build Docker image tarball
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: true
+          push: false
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=docker,dest=/tmp/sub2api-image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub2api-docker-image
+          path: /tmp/sub2api-image.tar
+          if-no-files-found: error
+          compression-level: 0
