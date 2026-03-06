@@ -231,9 +231,9 @@ func GetCodexCLIInstructions() string {
 	return getCodexCLIInstructions()
 }
 
-// applyInstructions 处理 instructions 字段
-// isCodexCLI=true: 仅补充缺失的 instructions（使用内置 Codex CLI 指令）
-// isCodexCLI=false: 优先使用内置 Codex CLI 指令覆盖
+// applyInstructions normalizes prompt-related fields for Responses requests.
+// Official Codex clients may fall back to the built-in Codex instructions.
+// Other clients keep user-provided prompt fields only.
 func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
 	if isCodexCLI {
 		return rewritePromptFields(reqBody, true)
@@ -257,8 +257,7 @@ func applyCodexCLIInstructions(reqBody map[string]any) bool {
 	return false
 }
 
-// applyOpenCodeInstructions 为非 Codex CLI 请求应用内置 Codex CLI 指令（兼容历史函数名）
-// 优先使用内置 Codex CLI 指令覆盖
+// applyOpenCodeInstructions keeps user-provided prompt fields without injecting built-in instructions.
 func applyOpenCodeInstructions(reqBody map[string]any) bool {
 	return rewritePromptFields(reqBody, false)
 }
@@ -280,24 +279,12 @@ func isInstructionsEmpty(reqBody map[string]any) bool {
 	return strings.TrimSpace(str) == ""
 }
 
-func rewritePromptFields(reqBody map[string]any, allowInstructions bool) bool {
+func rewritePromptFields(reqBody map[string]any, allowBuiltInInstructions bool) bool {
 	if len(reqBody) == 0 {
 		return false
 	}
 
 	modified := false
-	if !allowInstructions {
-		if _, ok := reqBody["instructions"]; ok {
-			delete(reqBody, "instructions")
-			modified = true
-		}
-		if _, ok := reqBody["system"]; ok {
-			delete(reqBody, "system")
-			modified = true
-		}
-		return modified
-	}
-
 	if rawSystem, ok := reqBody["system"]; ok {
 		if system, ok := rawSystem.(string); ok {
 			system = strings.TrimSpace(system)
@@ -310,6 +297,14 @@ func rewritePromptFields(reqBody map[string]any, allowInstructions bool) bool {
 		}
 		delete(reqBody, "system")
 		modified = true
+	}
+
+	if allowBuiltInInstructions && isInstructionsEmpty(reqBody) {
+		instructions := strings.TrimSpace(getCodexCLIInstructions())
+		if instructions != "" {
+			reqBody["instructions"] = instructions
+			modified = true
+		}
 	}
 
 	return modified

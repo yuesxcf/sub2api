@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -204,7 +205,36 @@ func TestApplyCodexOAuthTransform_CodexCLI_MapsSystemToInstructions(t *testing.T
 	require.True(t, result.Modified)
 }
 
-func TestApplyCodexOAuthTransform_NonCodexCLI_StripsPromptFields(t *testing.T) {
+func TestApplyCodexOAuthTransform_CodexCLI_FallsBackToBuiltInInstructions(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.1-codex",
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true)
+
+	instructions, ok := reqBody["instructions"].(string)
+	require.True(t, ok)
+	require.Equal(t, strings.TrimSpace(GetCodexCLIInstructions()), instructions)
+	require.True(t, result.Modified)
+}
+
+func TestApplyCodexOAuthTransform_NonCodexCLI_PreservesExistingInstructions(t *testing.T) {
+	reqBody := map[string]any{
+		"model":        "gpt-5.1",
+		"instructions": "old instructions",
+		"store":        false,
+		"stream":       true,
+	}
+
+	result := applyCodexOAuthTransform(reqBody, false)
+
+	instructions, ok := reqBody["instructions"].(string)
+	require.True(t, ok)
+	require.Equal(t, "old instructions", instructions)
+	require.False(t, result.Modified)
+}
+
+func TestApplyCodexOAuthTransform_NonCodexCLI_MapsSystemToInstructions(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.1",
 		"instructions": "old instructions",
@@ -213,11 +243,26 @@ func TestApplyCodexOAuthTransform_NonCodexCLI_StripsPromptFields(t *testing.T) {
 
 	result := applyCodexOAuthTransform(reqBody, false)
 
-	_, hasInstructions := reqBody["instructions"]
-	require.False(t, hasInstructions)
+	instructions, ok := reqBody["instructions"].(string)
+	require.True(t, ok)
+	require.Equal(t, "system prompt", instructions)
 	_, hasSystem := reqBody["system"]
 	require.False(t, hasSystem)
 	require.True(t, result.Modified)
+}
+
+func TestApplyCodexOAuthTransform_NonCodexCLI_DoesNotInjectBuiltInInstructions(t *testing.T) {
+	reqBody := map[string]any{
+		"model":  "gpt-5.1",
+		"store":  false,
+		"stream": true,
+	}
+
+	result := applyCodexOAuthTransform(reqBody, false)
+
+	_, hasInstructions := reqBody["instructions"]
+	require.False(t, hasInstructions)
+	require.False(t, result.Modified)
 }
 
 func TestIsInstructionsEmpty(t *testing.T) {

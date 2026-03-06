@@ -816,9 +816,15 @@ func logOpenAIInstructionsRequiredDebug(
 	}
 
 	userAgent := ""
+	originator := ""
 	if c != nil {
 		userAgent = strings.TrimSpace(c.GetHeader("User-Agent"))
+		originator = strings.TrimSpace(c.GetHeader("originator"))
 	}
+	instructions := strings.TrimSpace(gjson.GetBytes(requestBody, "instructions").String())
+	system := strings.TrimSpace(gjson.GetBytes(requestBody, "system").String())
+	model := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
+	officialClient := openai.IsCodexOfficialClientRequest(userAgent) || openai.IsCodexOfficialClientOriginator(originator)
 
 	fields := []zap.Field{
 		zap.String("component", "service.openai_gateway"),
@@ -827,11 +833,28 @@ func logOpenAIInstructionsRequiredDebug(
 		zap.Int("upstream_status_code", upstreamStatusCode),
 		zap.String("upstream_error_message", msg),
 		zap.String("request_user_agent", userAgent),
-		zap.Bool("codex_official_client_match", openai.IsCodexCLIRequest(userAgent)),
+		zap.String("request_originator", originator),
+		zap.String("request_model", model),
+		zap.Bool("codex_official_client_match", officialClient),
+		zap.Bool("has_instructions", instructions != ""),
+		zap.Int("instructions_len", len(instructions)),
+		zap.Bool("has_system", system != ""),
+		zap.Int("system_len", len(system)),
 	}
 	fields = appendCodexCLIOnlyRejectedRequestFields(fields, c, requestBody)
 
 	logger.FromContext(ctx).With(fields...).Warn("OpenAI 上游返回 Instructions are required，已记录请求详情用于排查")
+	logger.LegacyPrintf(
+		"service.openai_gateway",
+		"[OpenAI] instructions-required debug account=%d model=%q official_client=%v ua=%q originator=%q instructions_len=%d system_len=%d",
+		accountID,
+		model,
+		officialClient,
+		userAgent,
+		originator,
+		len(instructions),
+		len(system),
+	)
 }
 
 func isOpenAIInstructionsRequiredError(upstreamStatusCode int, upstreamMsg string, upstreamBody []byte) bool {
@@ -1579,15 +1602,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	disablePatch := func() {
 		patchDisabled = true
-	}
-
-	// 非透传模式下，保持历史行为：非 Codex CLI 请求在 instructions 为空时注入默认指令。
-	if account == nil && !isCodexCLI && isInstructionsEmpty(reqBody) {
-		if instructions := strings.TrimSpace(GetOpenCodeInstructions()); instructions != "" {
-			reqBody["instructions"] = instructions
-			bodyModified = true
-			markPatchSet("instructions", instructions)
-		}
 	}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
